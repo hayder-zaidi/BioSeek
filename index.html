@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BioSeek | Advanced Research</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+
+    <div class="bg-gradient"></div>
+
+    <div class="app-container">
+        <aside class="sidebar glass">
+            <div class="logo">
+                <i class="fa-solid fa-dna pulse"></i>
+                <h2>BioSeek</h2>
+            </div>
+            <nav>
+                <button class="nav-btn active"><i class="fa-solid fa-microscope"></i> Analyse</button>
+                <button class="nav-btn"><i class="fa-solid fa-database"></i> Base de données</button>
+            </nav>
+            <div class="system-status">
+                <span class="dot online"></span> Backend Connecté (Port 8000)
+            </div>
+        </aside>
+
+        <main class="chat-interface">
+            <header class="glass-header">
+                <div class="header-info">
+                    <h3>BioSeek Intelligence</h3>
+                    <p>Connecté à Gemini 2.5 & Qdrant Vector DB</p>
+                </div>
+            </header>
+
+            <div class="chat-area" id="chat-container">
+                <div class="message ai">
+                    <div class="avatar"><i class="fa-solid fa-robot"></i></div>
+                    <div class="content">
+                        <p>Bonjour. Je suis prêt. Importez une image ou posez une question scientifique.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="input-area glass">
+                <input type="file" id="file-input" hidden accept="image/*">
+               
+                <button class="attach-btn" id="attach-btn" title="Ajouter une image">
+                    <i class="fa-solid fa-paperclip"></i>
+                    <span id="file-indicator" class="file-badge"></span>
+                </button>
+               
+                <textarea id="user-input" placeholder="Posez une question sur l'insuline, l'ADN..."></textarea>
+                <button class="send-btn" id="send-btn"><i class="fa-solid fa-paper-plane"></i></button>
+            </div>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
+
+
+

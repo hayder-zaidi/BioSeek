@@ -4,9 +4,11 @@ import uuid
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware # <--- NEW: For Browser Connection
+from fastapi.responses import FileResponse # <--- NEW: To serve your HTML file
 from pydantic import BaseModel
 from qdrant_client import QdrantClient, models
-from sentence_transformers import SentenceTransformer, CrossEncoder  # <--- Added CrossEncoder
+from sentence_transformers import SentenceTransformer, CrossEncoder
 import google.generativeai as genai
 from collections import defaultdict
 from PIL import Image
@@ -15,19 +17,27 @@ import config
 # --- INITIALISATION ---
 app = FastAPI()
 
+# 1. SETUP CORS (Indispensable pour que le Frontend JS puisse parler au Backend)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Autorise toutes les origines (pour le dév)
+    allow_credentials=True,
+    allow_methods=["*"],  # Autorise GET, POST, etc.
+    allow_headers=["*"],
+)
+
 # Création automatique des dossiers
 os.makedirs("static/images", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-print("🔌 Démarrage du Backend Bio-Médical (Mode AGENT + RE-RANKING)...")
+print("🔌 Démarrage du Backend Bio-Médical (Mode HTML/JS + AGENT)...")
 
 # --- CONNEXIONS API & MODÈLES ---
 try:
     # 1. Le modèle pour la recherche rapide (Vecteurs)
     encoder = SentenceTransformer(config.EMBEDDING_MODEL)
     
-    # 2. Le modèle pour la précision (Re-Ranking) - NOUVEAU 🚀
-    # Ce modèle est plus lent mais beaucoup plus intelligent pour trier les résultats.
+    # 2. Le modèle pour la précision (Re-Ranking)
     reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
     print("✅ Modèle de Re-Ranking chargé.")
 
@@ -51,14 +61,14 @@ def search_medical_database(search_term: str):
     try:
         vector = encoder.encode(search_term).tolist()
         
-        # 1. ÉTAPE 1 : Récupération large (On demande 10 résultats au lieu de 2)
+        # 1. ÉTAPE 1 : Récupération large
         hits_text = qdrant.query_points(
             collection_name="bio_knowledge_base",
             query=vector,
-            limit=10  # On ratisse large
+            limit=10 
         ).points
 
-        # 2. ÉTAPE 2 : Recherche d'images (Optionnel)
+        # 2. ÉTAPE 2 : Recherche d'images
         hits_images = []
         try:
             if qdrant.collection_exists("bio_images"):
@@ -73,35 +83,25 @@ def search_medical_database(search_term: str):
         if not hits_text and not hits_images:
             return "Aucune information trouvée dans la base."
 
-        # 3. ÉTAPE 3 : Re-Ranking (Le tri intelligent)
-        # On prépare des paires [Question, Réponse potentielle] pour que le juge (CrossEncoder) décide.
+        # 3. ÉTAPE 3 : Re-Ranking
         valid_hits = [hit for hit in hits_text if 'text' in hit.payload]
         
         if valid_hits:
-            # On crée les paires [Query, Document Text]
             cross_inp = [[search_term, hit.payload['text']] for hit in valid_hits]
-            
-            # Le modèle donne un score de pertinence à chaque paire
             cross_scores = reranker.predict(cross_inp)
-            
-            # On combine les résultats avec leurs scores et on trie du meilleur au moins bon
             scored_hits = sorted(zip(valid_hits, cross_scores), key=lambda x: x[1], reverse=True)
-            
-            # On garde seulement les 3 MEILLEURS (Top 3)
             top_hits = [hit for hit, score in scored_hits[:3]]
             print(f"   👉 Re-Ranking: {len(hits_text)} candidats -> 3 meilleurs retenus.")
         else:
             top_hits = []
 
-        # 4. Construction de la réponse pour l'Agent
+        # 4. Construction de la réponse
         results_text = ""
         request_images_context["current"] = [] 
 
-        # Ajout des textes triés
         for hit in top_hits:
             results_text += f"- Connaissance (Pertinence élevée): {hit.payload['text']}\n"
             
-        # Ajout des images (On les garde telles quelles, le re-ranking d'images est plus complexe)
         for hit in hits_images:
             desc = hit.payload.get('caption', 'Image')
             url = hit.payload.get('image_url', '')
@@ -119,7 +119,6 @@ def search_medical_database(search_term: str):
 # --- CONFIGURATION DE L'AGENT ---
 tools_list = [search_medical_database]
 
-# Configuration stricte pour la compétition
 agent_model = genai.GenerativeModel(
     'gemini-2.5-flash',
     tools=tools_list,
@@ -129,65 +128,27 @@ agent_model = genai.GenerativeModel(
     
     Règles :
     1. Si la question est médicale, utilise l'outil 'search_medical_database'.
-    2. Si l'outil ne renvoie rien, dis que tu ne sais pas. N'invente pas.
-    3. Si la question n'est PAS médicale (ex: cuisine, sport, politique), refuse poliment de répondre.
+    2. Utilise le format Markdown pour formater ta réponse (Gras, Listes).
+    3. Si l'outil ne renvoie rien, dis que tu ne sais pas. N'invente pas.
     """
 )
 
 vision_model = genai.GenerativeModel('gemini-2.5-flash')
 
-# --- ENDPOINTS (Identiques au code précédent) ---
-class Query(BaseModel):
-    question: str
+# --- NOUVEAUX ENDPOINTS POUR SERVIR LE FRONTEND ---
+@app.get("/")
+async def read_index():
+    return FileResponse('index.html')
 
-@app.post("/upload_analyze")
-async def upload_analyze(file: UploadFile = File(...)):
-    try:
-        file_extension = file.filename.split(".")[-1]
-        unique_name = f"{uuid.uuid4()}.{file_extension}"
-        file_path = f"static/images/{unique_name}"
-        
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            
-        img = Image.open(file_path)
-        response = vision_model.generate_content(["Analyse cette image médicale en détail.", img])
-        description = response.text
-        
-        vector = encoder.encode(description).tolist()
-        qdrant.upsert(
-            collection_name="bio_images",
-            points=[models.PointStruct(
-                id=str(uuid.uuid4()),
-                vector=vector,
-                payload={
-                    "image_url": f"http://127.0.0.1:8002/{file_path}",
-                    "caption": description,
-                    "type": "uploaded_user",
-                    "source": "Utilisateur"
-                }
-            )]
-        )
-        return {"filename": unique_name, "filepath": file_path, "analysis": description}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@app.get("/style.css")
+async def read_css():
+    return FileResponse('style.css')
 
-@app.post("/ask")
-async def ask_agent(query: Query):
-    try:
-        request_images_context["current"] = []
-        
-        # Agent Automatique
-        chat = agent_model.start_chat(enable_automatic_function_calling=True)
-        response = chat.send_message(query.question)
-        
-        return {
-            "response": response.text,
-            "images": request_images_context["current"]
-        }
-    except Exception as e:
-        print(f"❌ Erreur Agent : {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+@app.get("/script.js")
+async def read_js():
+    return FileResponse('script.js')
+
+# --- API ENDPOINTS ---
 
 @app.post("/ask_multimodal")
 async def ask_multimodal(
@@ -222,4 +183,5 @@ async def ask_multimodal(
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8002)
+    # MODIFICATION: Port 8000 pour correspondre à votre script.js
+    uvicorn.run(app, host="127.0.0.1", port=8000)
